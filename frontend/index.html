@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WiredSocially — AI Voice Assistant</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --bg:            #060c1a;
+      --card-bg:       rgba(10, 18, 50, 0.88);
+      --card-border:   rgba(80, 130, 255, 0.18);
+      --text-hi:       #eef1ff;
+      --text-mid:      rgba(170, 190, 240, 0.72);
+      --text-lo:       rgba(110, 140, 210, 0.50);
+      --accent:        #4a8cff;
+      --accent-glow:   rgba(74, 140, 255, 0.35);
+      --red:           #ff4b72;
+      --gold:          #ffd166;
+    }
+
+    html, body {
+      height: 100%;
+      background: var(--bg);
+      font-family: -apple-system, "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+
+    /* ── background canvas (stars + orb) ── */
+    #bgCanvas {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* light streaks */
+    .streak {
+      position: fixed;
+      bottom: 0;
+      width: 2px;
+      pointer-events: none;
+      z-index: 1;
+    }
+    .streak::before, .streak::after {
+      content: '';
+      position: absolute;
+      left: 50%;
+      bottom: 0;
+      transform: translateX(-50%);
+      border-radius: 999px;
+    }
+    .streak.left  { left: calc(50% - 240px); transform: rotate(-10deg); transform-origin: bottom; }
+    .streak.right { right: calc(50% - 240px); transform: rotate(10deg);  transform-origin: bottom; }
+    .streak::before { width: 2px;  height: 52vh; background: linear-gradient(to top, rgba(140,180,255,.7), transparent); }
+    .streak::after  { width: 30px; height: 52vh; background: linear-gradient(to top, rgba(80,130,255,.18), transparent); filter: blur(10px); }
+
+    /* ── page layout ── */
+    #root {
+      position: relative;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      gap: 32px;
+      padding: 24px;
+    }
+
+    /* ── shared card shell ── */
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--card-border);
+      border-radius: 28px;
+      backdrop-filter: blur(28px) saturate(160%);
+      -webkit-backdrop-filter: blur(28px) saturate(160%);
+      box-shadow:
+        0 0 80px rgba(40,80,255,.09),
+        0 24px 60px rgba(0,0,0,.45),
+        inset 0 1px 0 rgba(255,255,255,.055);
+      width: 420px;
+    }
+
+    /* ── UPLOAD CARD ── */
+    #uploadCard {
+      padding: 44px 36px;
+      text-align: center;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 16px;
+    }
+    #uploadCard.hidden { display: none; }
+
+    .upload-zone {
+      width: 88px;
+      height: 88px;
+      background: rgba(74,140,255,.08);
+      border: 2px dashed rgba(74,140,255,.35);
+      border-radius: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: background .2s, border-color .2s, transform .15s;
+      margin-bottom: 4px;
+    }
+    .upload-zone:hover { background: rgba(74,140,255,.15); border-color: rgba(74,140,255,.65); transform: scale(1.04); }
+    .upload-zone svg { width: 36px; height: 36px; opacity: .75; }
+
+    #uploadCard h2 { color: var(--text-hi); font-size: 21px; font-weight: 650; letter-spacing: -.2px; }
+    #uploadCard p  { color: var(--text-mid); font-size: 13.5px; line-height: 1.6; max-width: 300px; }
+
+    #fileInput { display: none; }
+
+    .pill-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, #4a8cff 0%, #6a5acd 100%);
+      color: #fff;
+      border: none;
+      padding: 12px 26px;
+      border-radius: 14px;
+      font-size: 14px;
+      font-weight: 560;
+      cursor: pointer;
+      transition: transform .15s, box-shadow .15s;
+      box-shadow: 0 4px 22px rgba(74,140,255,.35);
+      margin-top: 4px;
+    }
+    .pill-btn:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(74,140,255,.45); }
+    .pill-btn:active { transform: none; }
+
+    .file-types {
+      font-size: 11.5px;
+      color: var(--text-lo);
+      letter-spacing: .4px;
+    }
+
+    /* upload progress bar */
+    .progress-bar-wrap {
+      width: 100%;
+      height: 3px;
+      background: rgba(74,140,255,.12);
+      border-radius: 99px;
+      overflow: hidden;
+      display: none;
+    }
+    .progress-bar-wrap.show { display: block; }
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #4a8cff, #a78bfa);
+      border-radius: 99px;
+      width: 0%;
+      transition: width .3s;
+      animation: shimmer 1.4s infinite;
+      background-size: 200% 100%;
+    }
+    @keyframes shimmer {
+      0%   { background-position: -200% 0; }
+      100% { background-position:  200% 0; }
+    }
+
+    /* ── ASSISTANT CARD ── */
+    #assistantCard {
+      padding: 24px 26px 28px;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      gap: 18px;
+    }
+    #assistantCard.visible { display: flex; }
+
+    /* header */
+    .card-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .brand-logo-img {
+      height: 22px;
+      width: auto;
+      object-fit: contain;
+      filter: brightness(0) invert(1) opacity(0.55);
+      transition: opacity .2s;
+    }
+    .brand-logo-img:hover { opacity: .75; }
+    .brand-pulse {
+      width: 7px; height: 7px;
+      background: var(--accent);
+      border-radius: 50%;
+      box-shadow: 0 0 9px var(--accent);
+      animation: pulse-dot 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%,100% { opacity: 1; }
+      50%      { opacity: .35; }
+    }
+    .hdr-actions { display: flex; gap: 6px; }
+    .icon-btn {
+      width: 30px; height: 30px;
+      background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 9px;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      color: rgba(180,210,255,.55);
+      font-size: 15px;
+      transition: background .15s, color .15s;
+      user-select: none;
+    }
+    .icon-btn:hover { background: rgba(255,255,255,.1); color: rgba(200,225,255,.9); }
+
+    /* doc badge */
+    .doc-badge {
+      align-self: flex-start;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(74,140,255,.09);
+      border: 1px solid rgba(74,140,255,.2);
+      border-radius: 8px;
+      padding: 3px 10px 3px 8px;
+      font-size: 11.5px;
+      color: rgba(140,185,255,.75);
+      font-weight: 500;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    .doc-badge span.name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 280px;
+    }
+
+    /* transcript */
+    .transcript-box {
+      width: 100%;
+      min-height: 84px;
+      display: flex;
+      align-items: flex-start;
+    }
+    #transcriptText {
+      font-size: 21px;
+      font-weight: 380;
+      color: rgba(175,200,245,.62);
+      line-height: 1.48;
+      letter-spacing: -.2px;
+      font-style: italic;
+      word-break: break-word;
+    }
+    #transcriptText .hi {
+      color: var(--text-hi);
+      font-weight: 650;
+      font-style: normal;
+    }
+
+    /* waveform */
+    #waveCanvas {
+      width: 100%;
+      height: 130px;
+      display: block;
+    }
+
+    /* status */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 20px;
+    }
+    #statusText {
+      font-size: 11.5px;
+      letter-spacing: .9px;
+      text-transform: uppercase;
+      font-weight: 540;
+      color: var(--text-lo);
+      transition: color .3s;
+    }
+    #statusText.active { color: var(--accent); }
+    #statusText.speaking { color: #a78bfa; }
+
+    .dots {
+      display: none;
+      gap: 5px;
+    }
+    .dots.show { display: flex; }
+    .dot {
+      width: 5px; height: 5px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: bounce 1.4s ease-in-out infinite;
+    }
+    .dot:nth-child(2) { animation-delay: .18s; }
+    .dot:nth-child(3) { animation-delay: .36s; }
+    @keyframes bounce {
+      0%,80%,100% { transform: scale(.55); opacity: .4; }
+      40%          { transform: scale(1);   opacity: 1;  }
+    }
+
+    /* mic button */
+    .mic-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #micBtn {
+      width: 78px; height: 78px;
+      border-radius: 50%;
+      background: #ffffff;
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 4px 28px rgba(255,255,255,.22), 0 0 0 0 rgba(255,255,255,.1);
+      transition: transform .18s, box-shadow .18s, background .25s;
+      position: relative;
+      z-index: 2;
+    }
+    #micBtn:hover  { transform: scale(1.06); box-shadow: 0 8px 38px rgba(255,255,255,.32), 0 0 0 0 rgba(255,255,255,.1); }
+    #micBtn.active { background: var(--red); box-shadow: 0 4px 28px rgba(255,75,114,.5); animation: ring 1.6s ease-out infinite; }
+    #micBtn.think  { background: var(--gold); box-shadow: 0 4px 28px rgba(255,209,102,.45); }
+    #micBtn.speak  { background: #a78bfa;     box-shadow: 0 4px 28px rgba(167,139,250,.45); }
+
+    @keyframes ring {
+      0%   { box-shadow: 0 4px 28px rgba(255,75,114,.5), 0 0 0  0   rgba(255,75,114,.35); }
+      70%  { box-shadow: 0 4px 28px rgba(255,75,114,.5), 0 0 0 24px rgba(255,75,114,0);   }
+      100% { box-shadow: 0 4px 28px rgba(255,75,114,.5), 0 0 0  0   rgba(255,75,114,0);   }
+    }
+
+    #micBtn svg { width: 34px; height: 34px; transition: opacity .2s; }
+
+    /* ── PAGE BRANDING ── */
+    .page-brand {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      user-select: none;
+    }
+    .brand-name {
+      font-size: 16px;
+      font-weight: 750;
+      color: rgba(160,195,255,.45);
+      letter-spacing: .3px;
+    }
+    .brand-name span { color: rgba(74,140,255,.65); }
+    .page-logo-img {
+      height: 32px;
+      width: auto;
+      object-fit: contain;
+      filter: brightness(0) invert(1) opacity(0.35);
+    }
+    .brand-sub {
+      font-size: 11px;
+      color: rgba(110,145,210,.35);
+      letter-spacing: .5px;
+    }
+
+    /* ── TOAST ── */
+    #toast {
+      position: fixed;
+      bottom: 28px;
+      left: 50%;
+      transform: translateX(-50%) translateY(70px);
+      background: rgba(15,26,65,.96);
+      border: 1px solid rgba(80,130,255,.25);
+      border-radius: 13px;
+      padding: 11px 20px;
+      font-size: 13px;
+      color: var(--text-hi);
+      backdrop-filter: blur(20px);
+      transition: transform .3s cubic-bezier(.34,1.56,.64,1);
+      z-index: 100;
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    #toast.show    { transform: translateX(-50%) translateY(0); }
+    #toast.err     { border-color: rgba(255,75,114,.4); color: #ff8fa0; }
+    #toast.success { border-color: rgba(74,200,140,.35); color: #6ee7b7; }
+  </style>
+</head>
+<body>
+
+<!-- background -->
+<canvas id="bgCanvas"></canvas>
+<div class="streak left"></div>
+<div class="streak right"></div>
+
+<div id="root">
+
+  <!-- ── UPLOAD CARD ── -->
+  <div class="card" id="uploadCard">
+    <div class="upload-zone" id="dropZone" onclick="fileInput.click()">
+      <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M24 34V18M24 18L18 24M24 18L30 24" stroke="#4a8cff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M12 34h24M8 26c0 4.418 3.582 8 8 8M40 26c0 4.418-3.582 8-8 8" stroke="#4a8cff" stroke-width="2" stroke-linecap="round" opacity=".5"/>
+        <circle cx="24" cy="18" r="15" stroke="#4a8cff" stroke-width="1.5" opacity=".15"/>
+      </svg>
+    </div>
+    <h2>Upload Your Document</h2>
+    <p>Upload a file and ask any question — your personal AI voice assistant will answer from the content.</p>
+    <input type="file" id="fileInput" accept=".pdf,.txt,.md,.docx" />
+    <button class="pill-btn" onclick="fileInput.click()">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Choose File
+    </button>
+    <div class="progress-bar-wrap" id="progressWrap">
+      <div class="progress-bar" id="progressBar"></div>
+    </div>
+    <div class="file-types">PDF &nbsp;·&nbsp; TXT &nbsp;·&nbsp; DOCX &nbsp;·&nbsp; MD</div>
+  </div>
+
+  <!-- ── ASSISTANT CARD ── -->
+  <div class="card" id="assistantCard">
+    <div class="card-header">
+      <div class="brand">
+        <div class="brand-pulse"></div>
+        <img class="brand-logo-img" src="https://wiredsocially.com/wp-content/uploads/2025/06/wordpresslogo-1.png" alt="WiredSocially" />
+      </div>
+      <div class="hdr-actions">
+        <div class="icon-btn" id="newUploadBtn" title="Upload new document">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </div>
+        <div class="icon-btn" id="resetBtn" title="Reset">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="doc-badge" id="docBadge">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      <span class="name" id="docName">—</span>
+    </div>
+
+    <div class="transcript-box">
+      <div id="transcriptText">
+        Hey, how can I help you <span class="hi">today?</span>
+      </div>
+    </div>
+
+    <canvas id="waveCanvas"></canvas>
+
+    <div class="status-row">
+      <div id="statusText">Click the mic to ask a question</div>
+      <div class="dots" id="dots">
+        <div class="dot"></div><div class="dot"></div><div class="dot"></div>
+      </div>
+    </div>
+
+    <div class="mic-wrap">
+      <button id="micBtn" aria-label="Start recording">
+        <svg id="micIcon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="9" y="2" width="6" height="12" rx="3" fill="#1a1a2e"/>
+          <path d="M5 11c0 3.866 3.134 7 7 7s7-3.134 7-7" stroke="#1a1a2e" stroke-width="2.2" stroke-linecap="round"/>
+          <line x1="12" y1="18" x2="12" y2="22" stroke="#1a1a2e" stroke-width="2.2" stroke-linecap="round"/>
+          <line x1="8" y1="22" x2="16" y2="22" stroke="#1a1a2e" stroke-width="2.2" stroke-linecap="round"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="page-brand">
+    <img class="page-logo-img" src="https://wiredsocially.com/wp-content/uploads/2025/06/wordpresslogo-1.png" alt="WiredSocially" />
+    <div class="brand-sub">AI-Powered Document Intelligence</div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ─── Config ────────────────────────────────────────────────────────────────
+const API = 'http://localhost:8000';
+
+// ─── Elements ──────────────────────────────────────────────────────────────
+const uploadCard    = document.getElementById('uploadCard');
+const assistantCard = document.getElementById('assistantCard');
+const fileInput     = document.getElementById('fileInput');
+const progressWrap  = document.getElementById('progressWrap');
+const progressBar   = document.getElementById('progressBar');
+const micBtn        = document.getElementById('micBtn');
+const transcriptEl  = document.getElementById('transcriptText');
+const statusEl      = document.getElementById('statusText');
+const dotsEl        = document.getElementById('dots');
+const docNameEl     = document.getElementById('docName');
+const toast         = document.getElementById('toast');
+const newUploadBtn  = document.getElementById('newUploadBtn');
+const resetBtn      = document.getElementById('resetBtn');
+const waveCanvas    = document.getElementById('waveCanvas');
+const bgCanvas      = document.getElementById('bgCanvas');
+
+// ─── App state ─────────────────────────────────────────────────────────────
+let phase = 'idle'; // idle | listening | thinking | speaking
+let recognition = null;
+const synth = window.speechSynthesis;
+let voices = [];
+
+// ─── Toast ─────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg, type = '', ms = 3200) {
+  clearTimeout(toastTimer);
+  toast.textContent = msg;
+  toast.className = `show ${type}`;
+  toastTimer = setTimeout(() => { toast.className = ''; }, ms);
+}
+
+// ─── Background canvas (star field + orb) ──────────────────────────────────
+const bgCtx = bgCanvas.getContext('2d');
+let stars = [];
+
+function initBg() {
+  bgCanvas.width  = window.innerWidth;
+  bgCanvas.height = window.innerHeight;
+
+  stars = Array.from({ length: 120 }, () => ({
+    x: Math.random() * bgCanvas.width,
+    y: Math.random() * bgCanvas.height * 0.85,
+    r: Math.random() * 1.2 + 0.3,
+    a: Math.random() * .6 + .1,
+    speed: Math.random() * .004 + .001,
+    offset: Math.random() * Math.PI * 2,
+  }));
+}
+
+function drawBg(t) {
+  const { width: W, height: H } = bgCanvas;
+  bgCtx.clearRect(0, 0, W, H);
+
+  // orb glow
+  const grad = bgCtx.createRadialGradient(W / 2, H + 200, 0, W / 2, H + 200, 680);
+  grad.addColorStop(0,   'rgba(20,55,200,.32)');
+  grad.addColorStop(.45, 'rgba(10,30,120,.16)');
+  grad.addColorStop(1,   'transparent');
+  bgCtx.fillStyle = grad;
+  bgCtx.fillRect(0, 0, W, H);
+
+  // stars
+  stars.forEach(s => {
+    const alpha = s.a * (.7 + .3 * Math.sin(t * s.speed + s.offset));
+    bgCtx.beginPath();
+    bgCtx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    bgCtx.fillStyle = `rgba(200,220,255,${alpha})`;
+    bgCtx.fill();
+  });
+}
+
+// ─── Waveform canvas ────────────────────────────────────────────────────────
+const wCtx = waveCanvas.getContext('2d');
+let wTime = 0;
+let ampTarget = 18;
+let ampCur    = 18;
+
+const WAVES = [
+  { freq: .0190, amp: 1.00, ph: 0,              color: 'rgba(255,255,255,.88)',  lw: 2.6 },
+  { freq: .0135, amp: .78,  ph: Math.PI * .42,  color: 'rgba(120,170,255,.78)', lw: 1.9 },
+  { freq: .0235, amp: .56,  ph: Math.PI * .85,  color: 'rgba(80,140,235,.55)',  lw: 1.4 },
+  { freq: .0095, amp: .88,  ph: Math.PI * 1.3,  color: 'rgba(160,205,255,.30)', lw: 1.0 },
+];
+
+function resizeWave() {
+  const dpr = window.devicePixelRatio || 1;
+  waveCanvas.width  = waveCanvas.offsetWidth  * dpr;
+  waveCanvas.height = waveCanvas.offsetHeight * dpr;
+  wCtx.scale(dpr, dpr);
+}
+
+function drawWave() {
+  const W = waveCanvas.offsetWidth;
+  const H = waveCanvas.offsetHeight;
+  wCtx.clearRect(0, 0, W, H);
+
+  ampCur += (ampTarget - ampCur) * .045;
+
+  WAVES.forEach(w => {
+    wCtx.beginPath();
+    wCtx.strokeStyle = w.color;
+    wCtx.lineWidth   = w.lw;
+    wCtx.shadowBlur  = 14;
+    wCtx.shadowColor = w.color;
+
+    for (let x = 0; x <= W; x += 1.5) {
+      const y = H / 2 +
+        ampCur * w.amp *
+        Math.sin(w.freq * x + w.ph + wTime) *
+        (0.85 + 0.15 * Math.cos(w.freq * .28 * x + wTime * .6));
+      x === 0 ? wCtx.moveTo(x, y) : wCtx.lineTo(x, y);
+    }
+    wCtx.stroke();
+  });
+
+  wTime += .026;
+}
+
+// ─── Main animation loop ────────────────────────────────────────────────────
+function loop(t) {
+  drawBg(t * .001);
+  drawWave();
+  requestAnimationFrame(loop);
+}
+
+// ─── Phase management ───────────────────────────────────────────────────────
+function setPhase(p) {
+  phase = p;
+  micBtn.className = '';
+  statusEl.className = '';
+  dotsEl.className = 'dots';
+
+  switch (p) {
+    case 'idle':
+      ampTarget = 18;
+      statusEl.textContent = 'Click the mic to ask a question';
+      break;
+    case 'listening':
+      ampTarget = 58;
+      micBtn.classList.add('active');
+      statusEl.className = 'active';
+      statusEl.textContent = 'Listening…';
+      break;
+    case 'thinking':
+      ampTarget = 10;
+      micBtn.classList.add('think');
+      statusEl.className = 'active';
+      statusEl.textContent = 'Thinking';
+      dotsEl.className = 'dots show';
+      break;
+    case 'speaking':
+      ampTarget = 48;
+      micBtn.classList.add('speak');
+      statusEl.className = 'speaking';
+      statusEl.textContent = 'Speaking…';
+      break;
+  }
+}
+
+// ─── Transcript helpers ─────────────────────────────────────────────────────
+function setTranscript(html) { transcriptEl.innerHTML = html; }
+
+function setTranscriptWords(text) {
+  const words = text.trim().split(' ');
+  if (!words.length) return;
+  const last = words.pop();
+  const rest = words.join(' ');
+  setTranscript((rest ? rest + ' ' : '') + `<span class="hi">${last}</span>`);
+}
+
+// ─── File upload ────────────────────────────────────────────────────────────
+const dropZone = document.getElementById('dropZone');
+
+['dragover', 'dragenter'].forEach(e => {
+  dropZone.addEventListener(e, ev => { ev.preventDefault(); dropZone.style.borderColor = 'rgba(74,140,255,.9)'; });
+});
+['dragleave', 'drop'].forEach(e => {
+  dropZone.addEventListener(e, ev => {
+    ev.preventDefault();
+    dropZone.style.borderColor = '';
+    if (e === 'drop' && ev.dataTransfer.files[0]) handleFile(ev.dataTransfer.files[0]);
+  });
+});
+
+fileInput.addEventListener('change', e => {
+  if (e.target.files[0]) handleFile(e.target.files[0]);
+  fileInput.value = '';
+});
+
+async function handleFile(file) {
+  const allowed = ['.pdf', '.txt', '.md', '.docx'];
+  if (!allowed.some(ext => file.name.toLowerCase().endsWith(ext))) {
+    showToast('Unsupported file type. Use PDF, TXT, MD, or DOCX.', 'err');
+    return;
+  }
+
+  progressWrap.classList.add('show');
+  progressBar.style.width = '30%';
+
+  const fd = new FormData();
+  fd.append('file', file);
+
+  try {
+    progressBar.style.width = '65%';
+    const res = await fetch(`${API}/api/upload`, { method: 'POST', body: fd });
+    progressBar.style.width = '100%';
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Upload failed');
+    }
+
+    const data = await res.json();
+    progressWrap.classList.remove('show');
+    progressBar.style.width = '0%';
+
+    docNameEl.textContent = file.name;
+    uploadCard.classList.add('hidden');
+    assistantCard.classList.add('visible');
+
+    setTranscript(`Document loaded! Indexed <span class="hi">${data.chunks} sections</span>. What would you like to know?`);
+    setPhase('idle');
+    showToast(`✓ ${file.name} ready — ${data.chunks} sections`, 'success');
+
+  } catch (err) {
+    progressWrap.classList.remove('show');
+    progressBar.style.width = '0%';
+    showToast(`Error: ${err.message}`, 'err');
+  }
+}
+
+// ─── Speech Recognition ──────────────────────────────────────────────────
+function buildRecognition() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    showToast('Voice recognition requires Chrome or Safari.', 'err', 5000);
+    return null;
+  }
+  const r = new SR();
+  r.continuous      = false;
+  r.interimResults  = true;
+  r.lang            = 'en-US';
+
+  r.onresult = e => {
+    const transcript = Array.from(e.results).map(x => x[0].transcript).join('');
+    setTranscriptWords(transcript);
+    if (e.results[e.results.length - 1].isFinal) queryAPI(transcript);
+  };
+
+  r.onerror = e => {
+    if (e.error !== 'no-speech') showToast(`Mic error: ${e.error}`, 'err');
+    setPhase('idle');
+  };
+
+  r.onend = () => { if (phase === 'listening') setPhase('idle'); };
+
+  return r;
+}
+
+// ─── API query ───────────────────────────────────────────────────────────
+async function queryAPI(question) {
+  if (!question.trim() || phase !== 'listening') return;
+  setPhase('thinking');
+
+  try {
+    const res = await fetch(`${API}/api/query`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      throw new Error(err.detail || 'Query failed');
+    }
+
+    const data = await res.json();
+    speak(data.answer);
+
+  } catch (err) {
+    showToast(`Error: ${err.message}`, 'err');
+    setPhase('idle');
+    setTranscript('Something went wrong. <span class="hi">Try again?</span>');
+  }
+}
+
+// ─── Speech Synthesis ────────────────────────────────────────────────────
+async function speak(text) {
+  setPhase('speaking');
+  setTranscriptWords(text);
+
+  // Try OpenAI TTS first — falls back to browser Samantha if unavailable
+  try {
+    const res = await fetch(`${API}/api/tts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, voice: 'nova' }),
+    });
+
+    if (!res.ok) throw new Error('TTS unavailable');
+
+    const blob = await res.blob();
+    const url  = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      setPhase('idle');
+      setTranscriptWords('Ask me another question…');
+    };
+    audio.onerror = () => { URL.revokeObjectURL(url); setPhase('idle'); };
+    audio.play();
+
+  } catch {
+    // Fallback: browser speech synthesis (Samantha)
+    synth.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate  = 0.93;
+    u.pitch = 1.0;
+    const preferred = voices.find(v => v.name === 'Samantha') || voices.find(v => v.lang.startsWith('en-')) || voices[0];
+    if (preferred) u.voice = preferred;
+    u.onend   = () => { setPhase('idle'); setTranscriptWords('Ask me another question…'); };
+    u.onerror = () => setPhase('idle');
+    synth.speak(u);
+  }
+}
+
+// ─── Mic button ──────────────────────────────────────────────────────────
+micBtn.addEventListener('click', () => {
+  if (phase === 'listening') {
+    recognition?.stop();
+    setPhase('idle');
+    return;
+  }
+  if (phase !== 'idle') return;
+
+  synth.cancel();
+  setPhase('listening');
+  setTranscriptWords('Listening…');
+
+  recognition = buildRecognition();
+  if (!recognition) { setPhase('idle'); return; }
+
+  try {
+    recognition.start();
+  } catch {
+    showToast('Could not start microphone.', 'err');
+    setPhase('idle');
+  }
+});
+
+// ─── Header buttons ──────────────────────────────────────────────────────
+newUploadBtn.addEventListener('click', () => fileInput.click());
+
+resetBtn.addEventListener('click', () => {
+  synth.cancel();
+  recognition?.stop();
+  setPhase('idle');
+  assistantCard.classList.remove('visible');
+  uploadCard.classList.remove('hidden');
+});
+
+// ─── Init ─────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  initBg();
+  resizeWave();
+  requestAnimationFrame(loop);
+
+  if (synth.onvoiceschanged !== undefined) {
+    synth.onvoiceschanged = () => { voices = synth.getVoices(); };
+  }
+  voices = synth.getVoices();
+
+  // Check if backend already has a doc loaded
+  fetch(`${API}/api/status`)
+    .then(r => r.json())
+    .then(d => {
+      if (d.ready) {
+        docNameEl.textContent = d.doc_name;
+        uploadCard.classList.add('hidden');
+        assistantCard.classList.add('visible');
+        setTranscript(`Welcome back! <span class="hi">${d.doc_name}</span> is loaded. Ask me anything.`);
+      }
+    })
+    .catch(() => {});
+});
+
+window.addEventListener('resize', () => {
+  initBg();
+  resizeWave();
+});
+</script>
+</body>
+</html>
